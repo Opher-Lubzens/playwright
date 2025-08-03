@@ -15,17 +15,19 @@
 */
 
 import type { ActionTraceEvent, AfterActionTraceEventAttachment } from '@trace/trace';
-import { msToString } from '@web/uiUtils';
+import { clsx, msToString } from '@web/uiUtils';
 import * as React from 'react';
 import './actionList.css';
 import * as modelUtil from './modelUtil';
-import { asLocator } from '@isomorphic/locatorGenerators';
-import type { Language } from '@isomorphic/locatorGenerators';
+import { asLocatorDescription, type Language } from '@isomorphic/locatorGenerators';
 import type { TreeState } from '@web/components/treeView';
 import { TreeView } from '@web/components/treeView';
 import type { ActionTraceEventInContext, ActionTreeItem } from './modelUtil';
 import type { Boundaries } from './geometry';
 import { ToolbarButton } from '@web/components/toolbarButton';
+import { testStatusIcon } from './testUtils';
+import { methodMetainfo } from '@isomorphic/protocolMetainfo';
+import { formatProtocolParam } from '@isomorphic/protocolFormatter';
 
 export interface ActionListProps {
   actions: ActionTraceEventInContext[],
@@ -116,9 +118,11 @@ export const renderAction = (
   }) => {
   const { sdkLanguage, revealConsole, revealAttachment, isLive, showDuration, showBadges } = options;
   const { errors, warnings } = modelUtil.stats(action);
-  const locator = action.params.selector ? asLocator(sdkLanguage || 'javascript', action.params.selector) : undefined;
   const showAttachments = !!action.attachments?.length && !!revealAttachment;
 
+  const locator = action.params.selector ? asLocatorDescription(sdkLanguage || 'javascript', action.params.selector) : undefined;
+
+  const isSkipped = action.class === 'Test' && action.method === 'step' && action.annotations?.some(a => a.type === 'skip');
   let time: string = '';
   if (action.endTime)
     time = msToString(action.endTime - action.startTime);
@@ -126,28 +130,53 @@ export const renderAction = (
     time = 'Timed out';
   else if (!isLive)
     time = '-';
-  return <>
-    <div className='action-title' title={action.apiName}>
-      <span>{action.apiName}</span>
-      {locator && <div className='action-selector' title={locator}>{locator}</div>}
-      {action.method === 'goto' && action.params.url && <div className='action-url' title={action.params.url}>{action.params.url}</div>}
-      {action.class === 'APIRequestContext' && action.params.url && <div className='action-url' title={action.params.url}>{excludeOrigin(action.params.url)}</div>}
+  const { elements, title } = renderTitleForCall(action);
+  return <div className='action-title vbox'>
+    <div className='hbox'>
+      <span className='action-title-method' title={title}>{elements}</span>
+      {(showDuration || showBadges || showAttachments || isSkipped) && <div className='spacer'></div>}
+      {showAttachments && <ToolbarButton icon='attach' title='Open Attachment' onClick={() => revealAttachment(action.attachments![0])} />}
+      {showDuration && !isSkipped && <div className='action-duration'>{time || <span className='codicon codicon-loading'></span>}</div>}
+      {isSkipped && <span className={clsx('action-skipped', 'codicon', testStatusIcon('skipped'))} title='skipped'></span>}
+      {showBadges && <div className='action-icons' onClick={() => revealConsole?.()}>
+        {!!errors && <div className='action-icon'><span className='codicon codicon-error'></span><span className='action-icon-value'>{errors}</span></div>}
+        {!!warnings && <div className='action-icon'><span className='codicon codicon-warning'></span><span className='action-icon-value'>{warnings}</span></div>}
+      </div>}
     </div>
-    {(showDuration || showBadges || showAttachments) && <div className='spacer'></div>}
-    {showAttachments && <ToolbarButton icon='attach' title='Open Attachment' onClick={() => revealAttachment(action.attachments![0])} />}
-    {showDuration && <div className='action-duration'>{time || <span className='codicon codicon-loading'></span>}</div>}
-    {showBadges && <div className='action-icons' onClick={() => revealConsole?.()}>
-      {!!errors && <div className='action-icon'><span className='codicon codicon-error'></span><span className='action-icon-value'>{errors}</span></div>}
-      {!!warnings && <div className='action-icon'><span className='codicon codicon-warning'></span><span className='action-icon-value'>{warnings}</span></div>}
-    </div>}
-  </>;
+    {locator && <div className='action-title-selector' title={locator}>{locator}</div>}
+  </div>;
 };
 
-function excludeOrigin(url: string): string {
-  try {
-    const urlObject = new URL(url);
-    return urlObject.pathname + urlObject.search;
-  } catch (error) {
-    return url;
+export function renderTitleForCall(action: ActionTraceEvent): { elements: React.ReactNode[], title: string } {
+  const titleFormat = action.title ?? methodMetainfo.get(action.class + '.' + action.method)?.title ?? action.method;
+
+  const elements: React.ReactNode[] = [];
+  const title: string[] = [];
+  let currentIndex = 0;
+  const regex = /\{([^}]+)\}/g;
+  let match;
+
+  while ((match = regex.exec(titleFormat)) !== null) {
+    const [fullMatch, quotedText] = match;
+    const chunk = titleFormat.slice(currentIndex, match.index);
+
+    elements.push(chunk);
+    title.push(chunk);
+
+    const param = formatProtocolParam(action.params, quotedText);
+    if (match.index === 0)
+      elements.push(param);
+    else
+      elements.push(<span className='action-title-param'>{param}</span>);
+    title.push(param);
+    currentIndex = match.index + fullMatch.length;
   }
+
+  if (currentIndex < titleFormat.length) {
+    const chunk = titleFormat.slice(currentIndex);
+    elements.push(chunk);
+    title.push(chunk);
+  }
+
+  return { elements, title: title.join('') };
 }

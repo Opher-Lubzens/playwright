@@ -50,7 +50,8 @@ class CsvReporter implements Reporter {
           if (test.ok() && !fixme)
             continue;
           const row = [];
-          row.push(csvEscape(`${file.title} :: ${test.title}`));
+          const [, , , ...titles] = test.titlePath();
+          row.push(csvEscape(`${file.title} › ${titles.join(' › ')}`));
           row.push(test.expectedStatus);
           row.push(test.outcome());
           if (fixme) {
@@ -66,7 +67,10 @@ class CsvReporter implements Reporter {
     }
     const csv = rows.map(r => r.join(',')).join('\n');
     const reportFile = path.resolve(this._options.configDir, this._options.outputFile || 'test-results.csv');
-    this._pendingWrite = fs.promises.writeFile(reportFile, csv);
+    this._pendingWrite = (async () => {
+      await fs.promises.mkdir(path.dirname(reportFile), { recursive: true });
+      await fs.promises.writeFile(reportFile, csv);
+    })();
   }
 
   async onExit() {

@@ -14,16 +14,26 @@
  * limitations under the License.
  */
 
-import type { StackFrame } from '@protocol/channels';
 import type { BrowserContext } from './browserContext';
 import type { APIRequestContext } from './fetch';
+import type { StackFrame } from '@protocol/channels';
+
+// Instrumentation can mutate the data, for example change apiName or stepId.
+export interface ApiCallData {
+  apiName: string;
+  title?: string;
+  frames: StackFrame[];
+  userData: any;
+  stepId?: string;
+  error?: Error;
+}
 
 export interface ClientInstrumentation {
   addListener(listener: ClientInstrumentationListener): void;
   removeListener(listener: ClientInstrumentationListener): void;
   removeAllListeners(): void;
-  onApiCallBegin(apiCall: string, params: Record<string, any>, frames: StackFrame[], userData: any, out: { stepId?: string }): void;
-  onApiCallEnd(userData: any, error?: Error): void;
+  onApiCallBegin(apiCall: ApiCallData, channel: { type: string, method: string, params?: Record<string, any> }): void;
+  onApiCallEnd(apiCal: ApiCallData): void;
   onWillPause(options: { keepTestTimeout: boolean }): void;
 
   runAfterCreateBrowserContext(context: BrowserContext): Promise<void>;
@@ -33,8 +43,8 @@ export interface ClientInstrumentation {
 }
 
 export interface ClientInstrumentationListener {
-  onApiCallBegin?(apiName: string, params: Record<string, any>, frames: StackFrame[], userData: any, out: { stepId?: string }): void;
-  onApiCallEnd?(userData: any, error?: Error): void;
+  onApiCallBegin?(apiCall: ApiCallData, channel: { type: string, method: string, params?: Record<string, any>  }): void;
+  onApiCallEnd?(apiCall: ApiCallData): void;
   onWillPause?(options: { keepTestTimeout: boolean }): void;
 
   runAfterCreateBrowserContext?(context: BrowserContext): Promise<void>;

@@ -15,6 +15,7 @@
  */
 
 import { escapeHTMLAttribute, escapeHTML } from '@isomorphic/stringUtils';
+
 import type { FrameSnapshot, NodeNameAttributesChildNodesSnapshot, NodeSnapshot, RenderedFrameSnapshot, ResourceSnapshot, SubtreeReferenceSnapshot } from '@trace/snapshot';
 import type { PageEntry } from '../types/entries';
 import type { LRUCache } from './lruCache';
@@ -81,7 +82,7 @@ export class SnapshotRenderer {
         // Best-effort Electron support: rewrite custom protocol in url() links in stylesheets.
         // Old snapshotter was sending lower-case.
         if (parentTag === 'STYLE' || parentTag === 'style')
-          result.push(rewriteURLsInStyleSheetForCustomProtocol(n));
+          result.push(escapeURLsInStyleSheet(rewriteURLsInStyleSheetForCustomProtocol(n)));
         else
           result.push(escapeHTML(n));
         return;
@@ -255,7 +256,9 @@ declare global {
 
 function snapshotScript(viewport: ViewportSize, ...targetIds: (string | undefined)[]) {
   function applyPlaywrightAttributes(unwrapPopoutUrl: (url: string) => string, viewport: ViewportSize, ...targetIds: (string | undefined)[]) {
-    const isUnderTest = new URLSearchParams(location.search).has('isUnderTest');
+    const searchParams = new URLSearchParams(location.search);
+    const shouldPopulateCanvasFromScreenshot = searchParams.has('shouldPopulateCanvasFromScreenshot');
+    const isUnderTest = searchParams.has('isUnderTest');
 
     // info to recursively compute canvas position relative to the top snapshot frame.
     // Before rendering each iframe, its parent extracts the '__playwright_canvas_render_info__' attribute
@@ -309,6 +312,16 @@ function snapshotScript(viewport: ViewportSize, ...targetIds: (string | undefine
         } catch {
         }
         element.removeAttribute('__playwright_popover_open_');
+      }
+      for (const element of root.querySelectorAll(`[__playwright_dialog_open_]`)) {
+        try {
+          if (element.getAttribute('__playwright_dialog_open_') === 'modal')
+            (element as HTMLDialogElement).showModal();
+          else
+            (element as HTMLDialogElement).show();
+        } catch {
+        }
+        element.removeAttribute('__playwright_dialog_open_');
       }
 
       for (const targetId of targetIds) {
@@ -512,15 +525,20 @@ function snapshotScript(viewport: ViewportSize, ...targetIds: (string | undefine
 
             drawCheckerboard(context, canvas);
 
-            context.drawImage(img, boundingRect.left * img.width, boundingRect.top * img.height, (boundingRect.right - boundingRect.left) * img.width, (boundingRect.bottom - boundingRect.top) * img.height, 0, 0, canvas.width, canvas.height);
+            if (shouldPopulateCanvasFromScreenshot) {
+              context.drawImage(img, boundingRect.left * img.width, boundingRect.top * img.height, (boundingRect.right - boundingRect.left) * img.width, (boundingRect.bottom - boundingRect.top) * img.height, 0, 0, canvas.width, canvas.height);
+
+              if (partiallyUncaptured)
+                canvas.title = `Playwright couldn't capture full canvas contents because it's located partially outside the viewport.`;
+              else
+                canvas.title = `Canvas contents are displayed on a best-effort basis based on viewport screenshots taken during test execution.`;
+            } else {
+              canvas.title = 'Canvas content display is disabled.';
+            }
+
             if (isUnderTest)
               // eslint-disable-next-line no-console
               console.log(`canvas drawn:`, JSON.stringify([boundingRect.left, boundingRect.top, (boundingRect.right - boundingRect.left), (boundingRect.bottom - boundingRect.top)].map(v => Math.floor(v * 100))));
-
-            if (partiallyUncaptured)
-              canvas.title = `Playwright couldn't capture full canvas contents because it's located partially outside the viewport.`;
-            else
-              canvas.title = `Canvas contents are displayed on a best-effort basis based on viewport screenshots taken during test execution.`;
           }
         };
         img.onerror = () => {
@@ -598,6 +616,21 @@ function rewriteURLsInStyleSheetForCustomProtocol(text: string): string {
       return match;
     return match.replace(protocol + '//', `https://pw-${protocol.slice(0, -1)}--`);
   });
+}
+
+// url() inside a <style> tag can mess up with html parsing, so we encode some of them.
+// As an example, the following url will close the </style> tag:
+// url('data:image/svg+xml,<svg><defs><style>.a{fill:none}</style></defs><g class="a"></g></svg>')
+const urlToEscapeRegex1 = /url\(\s*'([^']*)'\s*\)/ig;
+const urlToEscapeRegex2 = /url\(\s*"([^"]*)"\s*\)/ig;
+function escapeURLsInStyleSheet(text: string): string {
+  const replacer = (match: string, url: string) => {
+    // Conservatively encode only urls with a closing tag.
+    if (url.includes('</'))
+      return match.replace(url, encodeURI(url));
+    return match;
+  };
+  return text.replace(urlToEscapeRegex1, replacer).replace(urlToEscapeRegex2, replacer);
 }
 
 // <base>/snapshot.html?r=<snapshotUrl> is used for "pop out snapshot" feature.

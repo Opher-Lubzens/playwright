@@ -14,19 +14,22 @@
  * limitations under the License.
  */
 
+import { renderTitleForCall } from '../../utils/isomorphic/protocolFormatter';
+import { monotonicTime, quoteCSSAttributeValue  } from '../../utils';
+import { raceAgainstDeadline } from '../../utils/isomorphic/timeoutRunner';
+import { Frame } from '../frames';
+
 import type { CallMetadata } from '../instrumentation';
-import type { CallLog, CallLogStatus } from '@recorder/recorderTypes';
 import type { Page } from '../page';
-import type { Frame } from '../frames';
 import type * as actions from '@recorder/actions';
-import { createGuid } from '../../utils';
-import { buildFullSelector, traceParamsForAction } from '../../utils/isomorphic/recorderUtils';
+import type { CallLog, CallLogStatus } from '@recorder/recorderTypes';
+
+export function buildFullSelector(framePath: string[], selector: string) {
+  return [...framePath, selector].join(' >> internal:control=enter-frame >> ');
+}
 
 export function metadataToCallLog(metadata: CallMetadata, status: CallLogStatus): CallLog {
-  let title = metadata.apiName || metadata.method;
-  if (metadata.method === 'waitForEventInfo')
-    title += `(${metadata.params.info.event})`;
-  title = title.replace('object.expect', 'expect');
+  const title = renderTitleForCall(metadata);
   if (metadata.error)
     status = 'error';
   const params = {
@@ -41,7 +44,7 @@ export function metadataToCallLog(metadata: CallMetadata, status: CallLogStatus)
   const callLog: CallLog = {
     id: metadata.id,
     messages: metadata.log,
-    title,
+    title: title ?? '',
     status,
     error: metadata.error?.error?.message,
     params,
@@ -70,33 +73,41 @@ export async function frameForAction(pageAliases: Map<Page, string>, actionInCon
   return result.frame;
 }
 
-export function callMetadataForAction(pageAliases: Map<Page, string>, actionInContext: actions.ActionInContext): { callMetadata: CallMetadata, mainFrame: Frame } {
-  const mainFrame = mainFrameForAction(pageAliases, actionInContext);
-  const { method, apiName, params } = traceParamsForAction(actionInContext);
+export function isAssertAction(action: actions.Action): action is actions.AssertAction {
+  return action.name.startsWith('assert');
+}
 
-  const callMetadata: CallMetadata = {
-    id: `call@${createGuid()}`,
-    apiName,
-    objectId: mainFrame.guid,
-    pageId: mainFrame._page.guid,
-    frameId: mainFrame.guid,
-    startTime: actionInContext.startTime,
-    endTime: 0,
-    type: 'Frame',
-    method,
-    params,
-    log: [],
-  };
-  return { callMetadata, mainFrame };
+function isSameAction(a: actions.ActionInContext, b: actions.ActionInContext): boolean {
+  return a.action.name === b.action.name && a.frame.pageAlias === b.frame.pageAlias && a.frame.framePath.join('|') === b.frame.framePath.join('|');
+}
+
+function isSameSelector(action: actions.ActionInContext, lastAction: actions.ActionInContext): boolean {
+  return 'selector' in action.action && 'selector' in lastAction.action && action.action.selector === lastAction.action.selector;
+}
+
+function isShortlyAfter(action: actions.ActionInContext, lastAction: actions.ActionInContext): boolean {
+  return action.startTime - lastAction.startTime < 500;
+}
+
+export function shouldMergeAction(action: actions.ActionInContext, lastAction: actions.ActionInContext | undefined): boolean {
+  if (!lastAction)
+    return false;
+  switch (action.action.name) {
+    case 'fill':
+      return isSameAction(action, lastAction) && isSameSelector(action, lastAction);
+    case 'navigate':
+      return isSameAction(action, lastAction);
+    case 'click':
+      return isSameAction(action, lastAction) && isSameSelector(action, lastAction) && isShortlyAfter(action, lastAction) && action.action.clickCount > (lastAction.action as actions.ClickAction).clickCount;
+  }
+  return false;
 }
 
 export function collapseActions(actions: actions.ActionInContext[]): actions.ActionInContext[] {
   const result: actions.ActionInContext[] = [];
   for (const action of actions) {
     const lastAction = result[result.length - 1];
-    const isSameAction = lastAction && lastAction.action.name === action.action.name && lastAction.frame.pageAlias === action.frame.pageAlias && lastAction.frame.framePath.join('|') === action.frame.framePath.join('|');
-    const isSameSelector = lastAction && 'selector' in lastAction.action && 'selector' in action.action && action.action.selector === lastAction.action.selector;
-    const shouldMerge = isSameAction && (action.action.name === 'navigate' || (action.action.name === 'fill' && isSameSelector));
+    const shouldMerge = shouldMergeAction(action, lastAction);
     if (!shouldMerge) {
       result.push(action);
       continue;
@@ -106,4 +117,40 @@ export function collapseActions(actions: actions.ActionInContext[]): actions.Act
     result[result.length - 1].startTime = startTime;
   }
   return result;
+}
+
+export async function generateFrameSelector(frame: Frame): Promise<string[]> {
+  const selectorPromises: Promise<string>[] = [];
+  while (frame) {
+    const parent = frame.parentFrame();
+    if (!parent)
+      break;
+    selectorPromises.push(generateFrameSelectorInParent(parent, frame));
+    frame = parent;
+  }
+  const result = await Promise.all(selectorPromises);
+  return result.reverse();
+}
+
+async function generateFrameSelectorInParent(parent: Frame, frame: Frame): Promise<string> {
+  const result = await raceAgainstDeadline(async () => {
+    try {
+      const frameElement = await frame.frameElement();
+      if (!frameElement || !parent)
+        return;
+      const utility = await parent._utilityContext();
+      const injected = await utility.injectedScript();
+      const selector = await injected.evaluate((injected, element) => {
+        return injected.generateSelectorSimple(element as Element);
+      }, frameElement);
+      return selector;
+    } catch (e) {
+    }
+  }, monotonicTime() + 2000);
+  if (!result.timedOut && result.result)
+    return result.result;
+
+  if (frame.name())
+    return `iframe[name=${quoteCSSAttributeValue(frame.name())}]`;
+  return `iframe[src=${quoteCSSAttributeValue(frame.url())}]`;
 }

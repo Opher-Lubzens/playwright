@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
+/* eslint-disable import/order */
+
 import json5Library from 'json5';
 export const json5 = json5Library;
-
-import * as piratesLibrary from 'pirates';
-export const pirates = piratesLibrary;
 
 import sourceMapSupportLibrary from 'source-map-support';
 export const sourceMapSupport = sourceMapSupportLibrary;

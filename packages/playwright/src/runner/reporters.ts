@@ -15,9 +15,12 @@
  */
 
 import path from 'path';
-import type { FullConfig, TestError } from '../../types/testReporter';
+
+import { calculateSha1 } from 'playwright-core/lib/utils';
+
+import { loadReporter } from './loadUtils';
 import { formatError, terminalScreen } from '../reporters/base';
-import type { Screen } from '../reporters/base';
+import { BlobReporter } from '../reporters/blob';
 import DotReporter from '../reporters/dot';
 import EmptyReporter from '../reporters/empty';
 import GitHubReporter from '../reporters/github';
@@ -26,13 +29,14 @@ import JSONReporter from '../reporters/json';
 import JUnitReporter from '../reporters/junit';
 import LineReporter from '../reporters/line';
 import ListReporter from '../reporters/list';
-import type { Suite } from '../common/test';
-import type { BuiltInReporter, FullConfigInternal } from '../common/config';
-import { loadReporter } from './loadUtils';
-import { BlobReporter } from '../reporters/blob';
+import {  wrapReporterAsV2 } from '../reporters/reporterV2';
+
 import type { ReporterDescription } from '../../types/test';
-import { type ReporterV2, wrapReporterAsV2 } from '../reporters/reporterV2';
-import { calculateSha1 } from 'playwright-core/lib/utils';
+import type { FullConfig, TestError } from '../../types/testReporter';
+import type { BuiltInReporter, FullConfigInternal } from '../common/config';
+import type { Suite } from '../common/test';
+import type { CommonReporterOptions, Screen } from '../reporters/base';
+import type { ReporterV2 } from '../reporters/reporterV2';
 
 export async function createReporters(config: FullConfigInternal, mode: 'list' | 'test' | 'merge', isTestServer: boolean, descriptions?: ReporterDescription[]): Promise<ReporterV2[]> {
   const defaultReporters: { [key in BuiltInReporter]: new(arg: any) => ReporterV2 } = {
@@ -73,7 +77,7 @@ export async function createReporters(config: FullConfigInternal, mode: 'list' |
     if (mode === 'list')
       reporters.unshift(new ListModeReporter());
     else if (mode !== 'merge')
-      reporters.unshift(!process.env.CI ? new LineReporter({ omitFailures: true }) : new DotReporter());
+      reporters.unshift(!process.env.CI ? new LineReporter() : new DotReporter());
   }
   return reporters;
 }
@@ -102,7 +106,7 @@ export function createErrorCollectingReporter(screen: Screen, writeToConsole?: b
   };
 }
 
-function reporterOptions(config: FullConfigInternal, mode: 'list' | 'test' | 'merge', isTestServer: boolean) {
+function reporterOptions(config: FullConfigInternal, mode: 'list' | 'test' | 'merge', isTestServer: boolean): CommonReporterOptions {
   return {
     configDir: config.configDir,
     _mode: mode,

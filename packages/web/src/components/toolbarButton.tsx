@@ -20,18 +20,18 @@ import * as React from 'react';
 import { clsx } from '../uiUtils';
 
 export interface ToolbarButtonProps {
-  title: string,
+  title?: string,
   icon?: string,
   disabled?: boolean,
   toggled?: boolean,
-  onClick: (e: React.MouseEvent) => void,
+  onClick?: (e: React.MouseEvent) => void,
   style?: React.CSSProperties,
   testId?: string,
   className?: string,
   ariaLabel?: string,
 }
 
-export const ToolbarButton: React.FC<React.PropsWithChildren<ToolbarButtonProps>> = ({
+export const ToolbarButton = React.forwardRef<HTMLButtonElement, React.PropsWithChildren<ToolbarButtonProps>>(function ToolbarButton({
   children,
   title = '',
   icon,
@@ -42,8 +42,9 @@ export const ToolbarButton: React.FC<React.PropsWithChildren<ToolbarButtonProps>
   testId,
   className,
   ariaLabel,
-}) => {
+}, ref) {
   return <button
+    ref={ref}
     className={clsx(className, 'toolbar-button', icon, toggled && 'toggled')}
     onMouseDown={preventDefault}
     onClick={onClick}
@@ -57,7 +58,7 @@ export const ToolbarButton: React.FC<React.PropsWithChildren<ToolbarButtonProps>
     {icon && <span className={`codicon codicon-${icon}`} style={children ? { marginRight: 5 } : {}}></span>}
     {children}
   </button>;
-};
+});
 
 export const ToolbarSeparator: React.FC<{ style?: React.CSSProperties }> = ({
   style,

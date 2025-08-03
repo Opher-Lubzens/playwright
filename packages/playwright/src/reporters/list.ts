@@ -14,10 +14,15 @@
  * limitations under the License.
  */
 
-import { ms as milliseconds } from 'playwright-core/lib/utilsBundle';
-import { TerminalReporter, stepSuffix, stripAnsiEscapes } from './base';
-import type { FullResult, Suite, TestCase, TestError, TestResult, TestStep } from '../../types/testReporter';
 import { getAsBooleanFromENV } from 'playwright-core/lib/utils';
+import { ms as milliseconds } from 'playwright-core/lib/utilsBundle';
+
+import { TerminalReporter, stepSuffix } from './base';
+import { stripAnsiEscapes } from '../util';
+
+import type { ListReporterOptions } from '../../types/test';
+import type { FullResult, Suite, TestCase, TestError, TestResult, TestStep } from '../../types/testReporter';
+import type { CommonReporterOptions } from './base';
 
 // Allow it in the Visual Studio Code Terminal and the new Windows Terminal
 const DOES_NOT_SUPPORT_UTF8_IN_TERMINAL = process.platform === 'win32' && process.env.TERM_PROGRAM !== 'vscode' && !process.env.WT_SESSION;
@@ -34,9 +39,9 @@ class ListReporter extends TerminalReporter {
   private _needNewLine = false;
   private _printSteps: boolean;
 
-  constructor(options: { printSteps?: boolean } = {}) {
+  constructor(options?: ListReporterOptions & CommonReporterOptions) {
     super();
-    this._printSteps = getAsBooleanFromENV('PLAYWRIGHT_LIST_PRINT_STEPS', options.printSteps);
+    this._printSteps = getAsBooleanFromENV('PLAYWRIGHT_LIST_PRINT_STEPS', options?.printSteps);
   }
 
   override onBegin(suite: Suite) {
@@ -97,7 +102,7 @@ class ListReporter extends TerminalReporter {
       const line = test.title + this.screen.colors.dim(stepSuffix(step));
       this._appendLine(line, prefix);
     } else {
-      this._updateLine(this._testRows.get(test)!, this.screen.colors.dim(this.formatTestTitle(test, step)) + this._retrySuffix(result), this._testPrefix(testIndex, ''));
+      this._updateOrAppendLine(this._testRows, test, this.screen.colors.dim(this.formatTestTitle(test, step)) + this._retrySuffix(result), this._testPrefix(testIndex, ''));
     }
   }
 
@@ -108,7 +113,7 @@ class ListReporter extends TerminalReporter {
     const testIndex = this._resultIndex.get(result) || '';
     if (!this._printSteps) {
       if (this.screen.isTTY)
-        this._updateLine(this._testRows.get(test)!, this.screen.colors.dim(this.formatTestTitle(test, step.parent)) + this._retrySuffix(result), this._testPrefix(testIndex, ''));
+        this._updateOrAppendLine(this._testRows, test, this.screen.colors.dim(this.formatTestTitle(test, step.parent)) + this._retrySuffix(result), this._testPrefix(testIndex, ''));
       return;
     }
 
@@ -122,13 +127,15 @@ class ListReporter extends TerminalReporter {
       text = title;
     text += this.screen.colors.dim(` (${milliseconds(step.duration)})`);
 
-    this._updateOrAppendLine(this._stepRows.get(step)!, text, prefix);
+    this._updateOrAppendLine(this._stepRows, step, text, prefix);
   }
 
   private _maybeWriteNewLine() {
     if (this._needNewLine) {
       this._needNewLine = false;
       process.stdout.write('\n');
+      ++this._lastRow;
+      this._lastColumn = 0;
     }
   }
 
@@ -189,14 +196,17 @@ class ListReporter extends TerminalReporter {
       text += this._retrySuffix(result) + this.screen.colors.dim(` (${milliseconds(result.duration)})`);
     }
 
-    this._updateOrAppendLine(this._testRows.get(test)!, text, prefix);
+    this._updateOrAppendLine(this._testRows, test, text, prefix);
   }
 
-  private _updateOrAppendLine(row: number, text: string, prefix: string) {
-    if (this.screen.isTTY) {
+  private _updateOrAppendLine<T>(entityRowNumbers: Map<T, number>, entity: T, text: string, prefix: string) {
+    const row = entityRowNumbers.get(entity);
+    // Only update the line if we assume that the line is still on the screen
+    if (row !== undefined && this.screen.isTTY && this._lastRow - row < this.screen.ttyHeight) {
       this._updateLine(row, text, prefix);
     } else {
       this._maybeWriteNewLine();
+      entityRowNumbers.set(entity, this._lastRow);
       this._appendLine(text, prefix);
     }
   }
@@ -210,6 +220,7 @@ class ListReporter extends TerminalReporter {
       process.stdout.write('\n');
     }
     ++this._lastRow;
+    this._lastColumn = 0;
   }
 
   private _updateLine(row: number, text: string, prefix: string) {
@@ -234,7 +245,8 @@ class ListReporter extends TerminalReporter {
 
   private _testPrefix(index: string, statusMark: string) {
     const statusMarkLength = stripAnsiEscapes(statusMark).length;
-    return '  ' + statusMark + ' '.repeat(3 - statusMarkLength) + this.screen.colors.dim(index + ' ');
+    const indexLength = Math.ceil(Math.log10(this.totalTestCount + 1));
+    return '  ' + statusMark + ' '.repeat(3 - statusMarkLength) + this.screen.colors.dim(index.padStart(indexLength) + ' ');
   }
 
   private _retrySuffix(result: TestResult) {

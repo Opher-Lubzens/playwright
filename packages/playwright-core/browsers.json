@@ -3,31 +3,43 @@
   "browsers": [
     {
       "name": "chromium",
-      "revision": "1153",
+      "revision": "1183",
       "installByDefault": true,
-      "browserVersion": "132.0.6834.57"
+      "browserVersion": "139.0.7258.42"
+    },
+    {
+      "name": "chromium-headless-shell",
+      "revision": "1183",
+      "installByDefault": true,
+      "browserVersion": "139.0.7258.42"
     },
     {
       "name": "chromium-tip-of-tree",
-      "revision": "1291",
+      "revision": "1355",
       "installByDefault": false,
-      "browserVersion": "133.0.6929.0"
+      "browserVersion": "140.0.7329.0"
+    },
+    {
+      "name": "chromium-tip-of-tree-headless-shell",
+      "revision": "1355",
+      "installByDefault": false,
+      "browserVersion": "140.0.7329.0"
     },
     {
       "name": "firefox",
-      "revision": "1466",
+      "revision": "1490",
       "installByDefault": true,
-      "browserVersion": "132.0"
+      "browserVersion": "141.0"
     },
     {
       "name": "firefox-beta",
-      "revision": "1466",
+      "revision": "1485",
       "installByDefault": false,
-      "browserVersion": "133.0b9"
+      "browserVersion": "142.0b4"
     },
     {
       "name": "webkit",
-      "revision": "2122",
+      "revision": "2198",
       "installByDefault": true,
       "revisionOverrides": {
         "debian11-x64": "2105",
@@ -38,10 +50,12 @@
         "mac11-arm64": "1816",
         "mac12": "2009",
         "mac12-arm64": "2009",
+        "mac13": "2140",
+        "mac13-arm64": "2140",
         "ubuntu20.04-x64": "2092",
         "ubuntu20.04-arm64": "2092"
       },
-      "browserVersion": "18.2"
+      "browserVersion": "26.0"
     },
     {
       "name": "ffmpeg",

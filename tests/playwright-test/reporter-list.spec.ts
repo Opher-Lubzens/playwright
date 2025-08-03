@@ -258,6 +258,161 @@ for (const useIntermediateMergeReport of [false, true] as const) {
       expect(text).toContain('1) a.test.ts:3:15 › passes › outer 1.0 › inner 1.1 ──');
       expect(result.exitCode).toBe(1);
     });
+
+    test('print stdio', async ({ runInlineTest }) => {
+      const result = await runInlineTest({
+        'a.test.ts': `
+          import { test, expect } from '@playwright/test';
+          test('passes', async ({}) => {
+            await new Promise(resolve => process.stdout.write('line1', () => resolve()));
+            await new Promise(resolve => process.stdout.write('line2\\n', () => resolve()));
+            await new Promise(resolve => process.stderr.write(Buffer.from(''), () => resolve()));
+          });
+
+          test('passes 2', async ({}) => {
+            await new Promise(resolve => process.stdout.write('partial', () => resolve()));
+          });
+
+          test('passes 3', async ({}) => {
+            await new Promise(resolve => process.stdout.write('full\\n', () => resolve()));
+          });
+
+          test('passes 4', async ({}) => {
+          });
+        `,
+      }, { reporter: 'list' }, { PW_TEST_DEBUG_REPORTERS: '1', PLAYWRIGHT_FORCE_TTY: '80' });
+      expect(result.exitCode).toBe(0);
+      expect(result.passed).toBe(4);
+      const expected = [
+        '#0 :      1 a.test.ts:3:15 › passes',
+        'line1line2',
+        `#0 :   ${POSITIVE_STATUS_MARK} 1 a.test.ts:3:15 › passes`,
+        '',
+        '#3 :      2 a.test.ts:9:15 › passes 2',
+        `partial#3 :   ${POSITIVE_STATUS_MARK} 2 a.test.ts:9:15 › passes 2`,
+        '',
+        '#5 :      3 a.test.ts:13:15 › passes 3',
+        'full',
+        `#5 :   ${POSITIVE_STATUS_MARK} 3 a.test.ts:13:15 › passes 3`,
+        '#7 :      4 a.test.ts:17:15 › passes 4',
+        `#7 :   ${POSITIVE_STATUS_MARK} 4 a.test.ts:17:15 › passes 4`,
+      ];
+      const lines = result.output.split('\n');
+      const firstIndex = lines.indexOf(expected[0]);
+      expect(firstIndex, 'first line should be there').not.toBe(-1);
+      for (let i = 0; i < expected.length; ++i)
+        expect(lines[firstIndex + i]).toContain(expected[i]);
+    });
+
+    test('should update test status row only when TTY has not scrolled', async ({ runInlineTest }) => {
+      const result = await runInlineTest({
+        'a.test.ts': `
+          import { test, expect } from '@playwright/test';
+          test('A', async ({}) => {
+            for (let i = 0; i < 20; ++i) {
+              console.log('line ' + i);
+            }
+          });
+
+          test('B', async ({}) => {
+            // Go past end of the screen
+            for (let i = 20; i < 60; ++i) {
+              console.log('line ' + i);
+            }
+
+            // Should create new line
+            await test.step('First step', async () => {
+              console.log('step 1');
+            });
+
+            for (let i = 60; i < 80; ++i) {
+              console.log('line ' + i);
+            }
+
+            // Should update the new (not original) line
+            await test.step('Second step', async () => {
+              console.log('step 2');
+            });
+          });
+        `,
+      }, { reporter: 'list' }, { PW_TEST_DEBUG_REPORTERS: '1', PLAYWRIGHT_FORCE_TTY: '80' });
+      expect(result.exitCode).toBe(0);
+      expect(result.passed).toBe(2);
+      const expected = [
+        '#0 :      1 a.test.ts:3:15 › A',
+      ];
+      for (let i = 0; i < 20; ++i)
+        expected.push(`line ${i}`);
+      // Update to initial test status row
+      expected.push(`#0 :   ${POSITIVE_STATUS_MARK} 1 a.test.ts:3:15 › A`);
+      expected.push(`#21 :      2 a.test.ts:9:15 › B`);
+      for (let i = 20; i < 60; ++i)
+        expected.push(`line ${i}`);
+      expected.push(`#62 :      2 a.test.ts:9:15 › B › First step`);
+      expected.push(`step 1`);
+      expected.push(`#62 :      2 a.test.ts:9:15 › B`);
+      for (let i = 60; i < 80; ++i)
+        expected.push(`line ${i}`);
+      expected.push(`#62 :      2 a.test.ts:9:15 › B › Second step`);
+      expected.push(`step 2`);
+      expected.push(`#62 :      2 a.test.ts:9:15 › B`);
+      expected.push(`#62 :   ${POSITIVE_STATUS_MARK} 2 a.test.ts:9:15 › B`);
+      const lines = result.output.split('\n');
+      const firstIndex = lines.indexOf(expected[0]);
+      expect(firstIndex, 'first line should be there').not.toBe(-1);
+      for (let i = 0; i < expected.length; ++i)
+        expect(lines[firstIndex + i]).toContain(expected[i]);
+    });
+
+    test('should update test status row only within configured TTY height', async ({ runInlineTest }) => {
+      const result = await runInlineTest({
+        'a.test.ts': `
+          import { test, expect } from '@playwright/test';
+          test('A', async ({}) => {
+            // No scroll
+            for (let i = 0; i < 60; ++i) {
+              console.log('line ' + i);
+            }
+
+            // Update original line
+            await test.step('First step', async () => {
+              console.log('step 1');
+            });
+
+            for (let i = 60; i < 120; ++i) {
+              console.log('line ' + i);
+            }
+
+            // Should create new line
+            await test.step('Second step', async () => {
+              console.log('step 2');
+            });
+          });
+        `,
+      }, { reporter: 'list' }, { PW_TEST_DEBUG_REPORTERS: '1', PLAYWRIGHT_FORCE_TTY: '80x80' });
+      expect(result.exitCode).toBe(0);
+      expect(result.passed).toBe(1);
+      const expected = [
+        '#0 :      1 a.test.ts:3:15 › A',
+      ];
+      for (let i = 0; i < 60; ++i)
+        expected.push(`line ${i}`);
+      // Update to initial test status row
+      expected.push(`#0 :      1 a.test.ts:3:15 › A › First step`);
+      expected.push(`step 1`);
+      expected.push(`#0 :      1 a.test.ts:3:15 › A`);
+      for (let i = 60; i < 120; ++i)
+        expected.push(`line ${i}`);
+      expected.push(`#122 :      1 a.test.ts:3:15 › A › Second step`);
+      expected.push(`step 2`);
+      expected.push(`#122 :      1 a.test.ts:3:15 › A`);
+      expected.push(`#122 :   ${POSITIVE_STATUS_MARK} 1 a.test.ts:3:15 › A`);
+      const lines = result.output.split('\n');
+      const firstIndex = lines.indexOf(expected[0]);
+      expect(firstIndex, 'first line should be there').not.toBe(-1);
+      for (let i = 0; i < expected.length; ++i)
+        expect(lines[firstIndex + i]).toContain(expected[i]);
+    });
   });
 }
 

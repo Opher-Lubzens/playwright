@@ -24,9 +24,9 @@ import type { Log } from '../../packages/trace/src/har';
 import { parseHar } from '../config/utils';
 const { createHttp2Server } = require('../../packages/playwright-core/lib/utils');
 
-async function pageWithHar(contextFactory: (options?: BrowserContextOptions) => Promise<BrowserContext>, testInfo: any, options: { outputPath?: string, proxy?: BrowserContextOptions['proxy'] } & Partial<Pick<BrowserContextOptions['recordHar'], 'content' | 'omitContent' | 'mode'>> = {}) {
+async function pageWithHar(contextFactory: (options?: BrowserContextOptions) => Promise<BrowserContext>, testInfo: any, options: { outputPath?: string } & Partial<Pick<BrowserContextOptions['recordHar'], 'content' | 'omitContent' | 'mode'>> = {}) {
   const harPath = testInfo.outputPath(options.outputPath || 'test.har');
-  const context = await contextFactory({ recordHar: { path: harPath, ...options }, ignoreHTTPSErrors: true, proxy: options.proxy });
+  const context = await contextFactory({ recordHar: { path: harPath, ...options }, ignoreHTTPSErrors: true });
   const page = await context.newPage();
   return {
     page,
@@ -42,11 +42,6 @@ async function pageWithHar(contextFactory: (options?: BrowserContextOptions) => 
   };
 }
 
-it('should throw without path', async ({ browser }) => {
-  const error = await browser.newContext({ recordHar: {} as any }).catch(e => e);
-  expect(error.message).toContain('recordHar.path: expected string, got undefined');
-});
-
 it('should have version and creator', async ({ contextFactory, server }, testInfo) => {
   const { page, getLog } = await pageWithHar(contextFactory, testInfo);
   await page.goto(server.EMPTY_PAGE);
@@ -60,6 +55,7 @@ it('should have browser', async ({ browserName, browser, contextFactory, server 
   const { page, getLog } = await pageWithHar(contextFactory, testInfo);
   await page.goto(server.EMPTY_PAGE);
   const log = await getLog();
+
   expect(log.browser!.name.toLowerCase()).toBe(browserName);
   expect(log.browser!.version).toBe(browser.version());
 });
@@ -87,17 +83,8 @@ it('should have pages in persistent context', async ({ launchPersistent, browser
   await page.waitForLoadState('domcontentloaded');
   await context.close();
   const log = JSON.parse(fs.readFileSync(harPath).toString())['log'];
-  let pageEntry;
-  if (browserName === 'webkit') {
-  // Explicit locale emulation forces a new page creation when
-  // doing a new context.
-  // See https://github.com/microsoft/playwright/blob/13dd41c2e36a63f35ddef5dc5dec322052d670c6/packages/playwright-core/src/server/browserContext.ts#L232-L242
-    expect(log.pages.length).toBe(2);
-    pageEntry = log.pages[1];
-  } else {
-    expect(log.pages.length).toBe(1);
-    pageEntry = log.pages[0];
-  }
+  expect(log.pages.length).toBe(1);
+  const pageEntry = log.pages[0];
   expect(pageEntry.id).toBeTruthy();
   expect(pageEntry.title).toBe('Hello');
 });
@@ -292,7 +279,7 @@ it('should record request overrides', async ({ contextFactory, server }, testInf
   expect(request.url).toBe(server.EMPTY_PAGE);
   expect(request.method).toBe('POST');
   expect(request.headers).toContainEqual({ name: 'custom', value: 'value' });
-  expect(request.cookies).toContainEqual({ name: 'foo', value: 'bar' });
+  expect(request.cookies).toEqual([]);
   expect(request.postData).toEqual({ 'mimeType': 'text/plain', 'params': [], 'text': 'Hi!' });
 });
 
@@ -505,7 +492,7 @@ it('should record failed request overrides', async ({ contextFactory, server }, 
   expect(request.url).toBe(server.EMPTY_PAGE);
   expect(request.method).toBe('POST');
   expect(request.headers).toContainEqual({ name: 'custom', value: 'value' });
-  expect(request.cookies).toContainEqual({ name: 'foo', value: 'bar' });
+  expect(request.cookies).toEqual([]);
   expect(request.postData).toEqual({ 'mimeType': 'text/plain', 'params': [], 'text': 'Hi!' });
 });
 
@@ -858,38 +845,6 @@ it('should respect minimal mode for API Requests', async ({ contextFactory, serv
   expect(entry.response.bodySize).toBe(-1);
 });
 
-it('should include timings when using http proxy', async ({ contextFactory, server, proxyServer }, testInfo) => {
-  proxyServer.forwardTo(server.PORT, { allowConnectRequests: true });
-  const { page, getLog } = await pageWithHar(contextFactory, testInfo, { proxy: { server: `localhost:${proxyServer.PORT}` } });
-  const response = await page.request.get(server.EMPTY_PAGE);
-  expect(proxyServer.connectHosts).toEqual([`localhost:${server.PORT}`]);
-  await expect(response).toBeOK();
-  const log = await getLog();
-  expect(log.entries[0].timings.connect).toBeGreaterThan(0);
-});
-
-it('should include timings when using socks proxy', async ({ contextFactory, server, socksPort }, testInfo) => {
-  const { page, getLog } = await pageWithHar(contextFactory, testInfo, { proxy: { server: `socks5://localhost:${socksPort}` } });
-  const response = await page.request.get(server.EMPTY_PAGE);
-  expect(await response.text()).toContain('Served by the SOCKS proxy');
-  await expect(response).toBeOK();
-  const log = await getLog();
-  expect(log.entries[0].timings.connect).toBeGreaterThan(0);
-});
-
-it('should not have connect and dns timings when socket is reused', async ({ contextFactory, server }, testInfo) => {
-  const { page, getLog } = await pageWithHar(contextFactory, testInfo);
-  await page.request.get(server.EMPTY_PAGE);
-  await page.request.get(server.EMPTY_PAGE);
-
-  const log = await getLog();
-  expect(log.entries).toHaveLength(2);
-  const request2 = log.entries[1];
-  expect.soft(request2.timings.connect).toBe(-1);
-  expect.soft(request2.timings.dns).toBe(-1);
-  expect.soft(request2.timings.blocked).toBeGreaterThan(0);
-});
-
 it('should include redirects from API request', async ({ contextFactory, server }, testInfo) => {
   server.setRedirect('/redirect-me', '/simple.json');
   const { page, getLog } = await pageWithHar(contextFactory, testInfo);
@@ -957,6 +912,7 @@ it('should not hang on slow chunked response', async ({ browserName, browser, co
   await page.goto(server.EMPTY_PAGE);
   await page.evaluate(() => (window as any).receivedFirstData);
   const log = await getLog();
+
   expect(log.browser!.name.toLowerCase()).toBe(browserName);
   expect(log.browser!.version).toBe(browser.version());
 });

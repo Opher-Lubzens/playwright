@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import type * as api from '../../types/types';
 import type { BrowserContext } from './browserContext';
+import type * as api from '../../types/types';
 
 export class Clock implements api.Clock {
   private _browserContext: BrowserContext;
@@ -50,6 +50,10 @@ export class Clock implements api.Clock {
 
   async setSystemTime(time: string | number | Date) {
     await this._browserContext._channel.clockSetSystemTime(parseTime(time));
+  }
+
+  async uninstall() {
+    await this._browserContext._channel.clockUninstall();
   }
 }
 

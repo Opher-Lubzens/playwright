@@ -29,8 +29,7 @@ import { asLocator } from '@isomorphic/locatorGenerators';
 import { toggleTheme } from '@web/theme';
 import { copy, useSetting } from '@web/uiUtils';
 import yaml from 'yaml';
-import { parseAriaKey } from '@isomorphic/ariaSnapshot';
-import type { AriaKeyError, ParsedYaml } from '@isomorphic/ariaSnapshot';
+import { parseAriaSnapshot } from '@isomorphic/ariaSnapshot';
 
 export interface RecorderProps {
   sources: Source[],
@@ -46,21 +45,30 @@ export const Recorder: React.FC<RecorderProps> = ({
   mode,
 }) => {
   const [selectedFileId, setSelectedFileId] = React.useState<string | undefined>();
-  const [runningFileId, setRunningFileId] = React.useState<string | undefined>();
   const [selectedTab, setSelectedTab] = useSetting<string>('recorderPropertiesTab', 'log');
   const [ariaSnapshot, setAriaSnapshot] = React.useState<string | undefined>();
   const [ariaSnapshotErrors, setAriaSnapshotErrors] = React.useState<SourceHighlight[]>();
 
-  const fileId = selectedFileId || runningFileId || sources[0]?.id;
+  React.useEffect(() => {
+    if (!sources.length)
+      return;
+    // When no selected file id present, pick the primary source (target language).
+    let fileId = selectedFileId ?? sources.find(s => s.isPrimary)?.id;
+    const selectedSource = sources.find(s => s.id === fileId);
+    const newestSource = sources.sort((a, b) => b.timestamp - a.timestamp)[0];
+    if (!selectedSource || newestSource.isRecorded !== selectedSource.isRecorded) {
+      // When debugger kicks in, or recording is resumed switch the selection to the newest source.
+      fileId = newestSource.id;
+    }
+    // If changes above force the selection to change, update the state.
+    if (fileId !== selectedFileId)
+      setSelectedFileId(fileId);
+  }, [sources, selectedFileId]);
 
   const source = React.useMemo(() => {
-    if (fileId) {
-      const source = sources.find(s => s.id === fileId);
-      if (source)
-        return source;
-    }
-    return emptySource();
-  }, [sources, fileId]);
+    const source = sources.find(s => s.id === selectedFileId);
+    return source ?? emptySource();
+  }, [sources, selectedFileId]);
 
   const [locator, setLocator] = React.useState('');
   window.playwrightElementPicked = (elementInfo: ElementInfo, userGesture?: boolean) => {
@@ -78,15 +86,13 @@ export const Recorder: React.FC<RecorderProps> = ({
     }
   };
 
-  window.playwrightSetRunningFile = setRunningFileId;
-
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
   }, [messagesEndRef]);
 
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       switch (event.key) {
         case 'F8':
@@ -117,8 +123,17 @@ export const Recorder: React.FC<RecorderProps> = ({
   const onAriaEditorChange = React.useCallback((ariaSnapshot: string) => {
     if (mode === 'none' || mode === 'inspecting')
       window.dispatch({ event: 'setMode', params: { mode: 'standby' } });
-    const { fragment, errors } = parseAriaSnapshot(ariaSnapshot);
-    setAriaSnapshotErrors(errors);
+    const { fragment, errors } = parseAriaSnapshot(yaml, ariaSnapshot, { prettyErrors: false });
+    const highlights = errors.map(error => {
+      const highlight: SourceHighlight = {
+        message: error.message,
+        line: error.range[1].line,
+        column: error.range[1].col,
+        type: 'subtle-error',
+      };
+      return highlight;
+    });
+    setAriaSnapshotErrors(highlights);
     setAriaSnapshot(ariaSnapshot);
     if (!errors.length)
       window.dispatch({ event: 'highlightRequested', params: { ariaTemplate: fragment } });
@@ -171,9 +186,9 @@ export const Recorder: React.FC<RecorderProps> = ({
       }}></ToolbarButton>
       <div style={{ flex: 'auto' }}></div>
       <div>Target:</div>
-      <SourceChooser fileId={fileId} sources={sources} setFileId={fileId => {
+      <SourceChooser fileId={source.id} sources={sources} setFileId={fileId => {
         setSelectedFileId(fileId);
-        window.dispatch({ event: 'fileChanged', params: { file: fileId } });
+        window.dispatch({ event: 'fileChanged', params: { fileId } });
       }} />
       <ToolbarButton icon='clear-all' title='Clear' disabled={!source || !source.text} onClick={() => {
         window.dispatch({ event: 'clear' });
@@ -208,57 +223,3 @@ export const Recorder: React.FC<RecorderProps> = ({
     />
   </div>;
 };
-
-function parseAriaSnapshot(ariaSnapshot: string): { fragment?: ParsedYaml, errors: SourceHighlight[] } {
-  const lineCounter = new yaml.LineCounter();
-  const yamlDoc = yaml.parseDocument(ariaSnapshot, {
-    keepSourceTokens: true,
-    lineCounter,
-    prettyErrors: false,
-  });
-
-  const errors: SourceHighlight[] = [];
-  for (const error of yamlDoc.errors) {
-    errors.push({
-      line: lineCounter.linePos(error.pos[0]).line,
-      type: 'subtle-error',
-      message: error.message,
-    });
-  }
-
-  if (yamlDoc.errors.length)
-    return { errors };
-
-  const handleKey = (key: yaml.Scalar<string>) => {
-    try {
-      parseAriaKey(key.value);
-    } catch (e) {
-      const keyError = e as AriaKeyError;
-      const linePos = lineCounter.linePos(key.srcToken!.offset + keyError.pos);
-      errors.push({
-        message: keyError.shortMessage,
-        line: linePos.line,
-        column: linePos.col,
-        type: 'subtle-error',
-      });
-    }
-  };
-  const visitSeq = (seq: yaml.YAMLSeq) => {
-    for (const item of seq.items) {
-      if (item instanceof yaml.YAMLMap) {
-        const map = item as yaml.YAMLMap;
-        for (const entry of map.items) {
-          if (entry.key instanceof yaml.Scalar)
-            handleKey(entry.key);
-          if (entry.value instanceof yaml.YAMLSeq)
-            visitSeq(entry.value);
-        }
-        continue;
-      }
-      if (item instanceof yaml.Scalar)
-        handleKey(item);
-    }
-  };
-  visitSeq(yamlDoc.contents as yaml.YAMLSeq);
-  return errors.length ? { errors } : { fragment: yamlDoc.toJSON(), errors };
-}

@@ -16,30 +16,36 @@
 
 import fs from 'fs';
 import path from 'path';
-import { installRootRedirect, openTraceInBrowser, openTraceViewerApp, registry, startTraceViewerServer } from 'playwright-core/lib/server';
-import { ManualPromise, gracefullyProcessExitDoNotHang, isUnderTest } from 'playwright-core/lib/utils';
-import type { Transport, HttpServer } from 'playwright-core/lib/utils';
-import type * as reporterTypes from '../../types/testReporter';
-import { affectedTestFiles, collectAffectedTestFiles, dependenciesForTestFile } from '../transform/compilationCache';
-import type { ConfigLocation, FullConfigInternal } from '../common/config';
-import { createErrorCollectingReporter, createReporterForTestServer, createReporters } from './reporters';
-import { TestRun, runTasks, createLoadTask, createRunTestsTasks, createReportBeginTask, createListFilesTask, runTasksDeferCleanup, createClearCacheTask, createGlobalSetupTasks, createStartDevServerTask, createApplyRebaselinesTask } from './tasks';
-import { open } from 'playwright-core/lib/utilsBundle';
-import ListReporter from '../reporters/list';
-import { SigIntWatcher } from './sigIntWatcher';
-import { Watcher } from '../fsWatcher';
-import type { ReportEntry, TestServerInterface, TestServerInterfaceEventEmitters } from '../isomorphic/testServerInterface';
-import type { ConfigCLIOverrides } from '../common/ipc';
-import { loadConfig, resolveConfigLocation, restartWithExperimentalTsEsm } from '../common/configLoader';
-import { webServerPluginsForConfig } from '../plugins/webServerPlugin';
-import type { TraceViewerRedirectOptions, TraceViewerServerOptions } from 'playwright-core/lib/server/trace/viewer/traceViewer';
-import type { TestRunnerPluginRegistration } from '../plugins';
-import { serializeError } from '../util';
-import { baseFullConfig } from '../isomorphic/teleReceiver';
-import { InternalReporter } from '../reporters/internalReporter';
-import type { ReporterV2 } from '../reporters/reporterV2';
-import { internalScreen } from '../reporters/base';
+import util from 'util';
 
+import { installRootRedirect, openTraceInBrowser, openTraceViewerApp, registry, startTraceViewerServer } from 'playwright-core/lib/server';
+import { ManualPromise, isUnderTest, gracefullyProcessExitDoNotHang } from 'playwright-core/lib/utils';
+import { open, debug } from 'playwright-core/lib/utilsBundle';
+
+import { createErrorCollectingReporter, createReporterForTestServer, createReporters } from './reporters';
+import { SigIntWatcher } from './sigIntWatcher';
+import { TestRun, createApplyRebaselinesTask, createClearCacheTask, createGlobalSetupTasks, createListFilesTask, createLoadTask, createReportBeginTask, createRunTestsTasks, createStartDevServerTask, runTasks, runTasksDeferCleanup } from './tasks';
+import { loadConfig, resolveConfigLocation } from '../common/configLoader';
+import { Watcher } from '../fsWatcher';
+import { baseFullConfig } from '../isomorphic/teleReceiver';
+import { addGitCommitInfoPlugin } from '../plugins/gitCommitInfoPlugin';
+import { webServerPluginsForConfig } from '../plugins/webServerPlugin';
+import { internalScreen } from '../reporters/base';
+import { InternalReporter } from '../reporters/internalReporter';
+import ListReporter from '../reporters/list';
+import { affectedTestFiles, collectAffectedTestFiles, dependenciesForTestFile } from '../transform/compilationCache';
+import { serializeError } from '../util';
+
+import type * as reporterTypes from '../../types/testReporter';
+import type { ConfigLocation, FullConfigInternal } from '../common/config';
+import type { ConfigCLIOverrides } from '../common/ipc';
+import type { ReportEntry, TestServerInterface, TestServerInterfaceEventEmitters } from '../isomorphic/testServerInterface';
+import type { TestRunnerPluginRegistration } from '../plugins';
+import type { ReporterV2 } from '../reporters/reporterV2';
+import type { TraceViewerRedirectOptions, TraceViewerServerOptions } from 'playwright-core/lib/server/trace/viewer/traceViewer';
+import type { HttpServer, Transport } from 'playwright-core/lib/utils';
+
+const originalDebugLog = debug.log;
 const originalStdoutWrite = process.stdout.write;
 const originalStderrWrite = process.stderr.write;
 
@@ -136,7 +142,7 @@ export class TestServerDispatcher implements TestServerInterface {
     process.stdout.columns = params.cols;
     process.stdout.rows = params.rows;
     process.stderr.columns = params.cols;
-    process.stderr.columns = params.rows;
+    process.stderr.rows = params.rows;
   }
 
   async checkBrowsers(): Promise<{ hasBrowsers: boolean; }> {
@@ -382,6 +388,13 @@ export class TestServerDispatcher implements TestServerInterface {
     if (process.env.PWTEST_DEBUG)
       return;
     if (intercept) {
+      if (debug.log === originalDebugLog) {
+        // Only if debug.log hasn't already been tampered with, don't intercept any DEBUG=* logging
+        debug.log = (...args) => {
+          const string = util.format(...args) + '\n';
+          return (originalStderrWrite as any).apply(process.stderr, [string]);
+        };
+      }
       process.stdout.write = (chunk: string | Buffer) => {
         this._dispatchEvent('stdio', chunkToPayload('stdout', chunk));
         return true;
@@ -391,6 +404,7 @@ export class TestServerDispatcher implements TestServerInterface {
         return true;
       };
     } else {
+      debug.log = originalDebugLog;
       process.stdout.write = originalStdoutWrite;
       process.stderr.write = originalStderrWrite;
     }
@@ -406,6 +420,7 @@ export class TestServerDispatcher implements TestServerInterface {
       // Preserve plugin instances between setup and build.
       if (!this._plugins) {
         webServerPluginsForConfig(config).forEach(p => config.plugins.push({ factory: p }));
+        addGitCommitInfoPlugin(config);
         this._plugins = config.plugins || [];
       } else {
         config.plugins.splice(0, config.plugins.length, ...this._plugins);
@@ -429,17 +444,19 @@ export class TestServerDispatcher implements TestServerInterface {
   }
 }
 
-export async function runUIMode(configFile: string | undefined, configCLIOverrides: ConfigCLIOverrides, options: TraceViewerServerOptions & TraceViewerRedirectOptions): Promise<reporterTypes.FullResult['status'] | 'restarted'> {
+export async function runUIMode(configFile: string | undefined, configCLIOverrides: ConfigCLIOverrides, options: TraceViewerServerOptions & TraceViewerRedirectOptions): Promise<reporterTypes.FullResult['status']> {
   const configLocation = resolveConfigLocation(configFile);
   return await innerRunTestServer(configLocation, configCLIOverrides, options, async (server: HttpServer, cancelPromise: ManualPromise<void>) => {
     await installRootRedirect(server, [], { ...options, webApp: 'uiMode.html' });
     if (options.host !== undefined || options.port !== undefined) {
       await openTraceInBrowser(server.urlPrefix('human-readable'));
     } else {
+      const channel = await installedChromiumChannelForUI(configLocation, configCLIOverrides);
       const page = await openTraceViewerApp(server.urlPrefix('precise'), 'chromium', {
         headless: isUnderTest() && process.env.PWTEST_HEADED_FOR_TEST !== '1',
         persistentContextOptions: {
           handleSIGINT: false,
+          channel,
         },
       });
       page.on('close', () => cancelPromise.resolve());
@@ -447,7 +464,21 @@ export async function runUIMode(configFile: string | undefined, configCLIOverrid
   });
 }
 
-export async function runTestServer(configFile: string | undefined, configCLIOverrides: ConfigCLIOverrides, options: { host?: string, port?: number }): Promise<reporterTypes.FullResult['status'] | 'restarted'> {
+// Pick first channel that is used by one of the projects, to ensure it is installed on the machine.
+async function installedChromiumChannelForUI(configLocation: ConfigLocation, configCLIOverrides: ConfigCLIOverrides) {
+  const config = await loadConfig(configLocation, configCLIOverrides).catch(e => null);
+  if (!config)
+    return undefined;
+  if (config.projects.some(p => (!p.project.use.browserName || p.project.use.browserName === 'chromium') && !p.project.use.channel))
+    return undefined;
+  for (const channel of ['chromium', 'chrome', 'msedge']) {
+    if (config.projects.some(p => p.project.use.channel === channel))
+      return channel;
+  }
+  return undefined;
+}
+
+export async function runTestServer(configFile: string | undefined, configCLIOverrides: ConfigCLIOverrides, options: { host?: string, port?: number }): Promise<reporterTypes.FullResult['status']> {
   const configLocation = resolveConfigLocation(configFile);
   return await innerRunTestServer(configLocation, configCLIOverrides, options, async server => {
     // eslint-disable-next-line no-console
@@ -455,9 +486,7 @@ export async function runTestServer(configFile: string | undefined, configCLIOve
   });
 }
 
-async function innerRunTestServer(configLocation: ConfigLocation, configCLIOverrides: ConfigCLIOverrides, options: { host?: string, port?: number }, openUI: (server: HttpServer, cancelPromise: ManualPromise<void>, configLocation: ConfigLocation) => Promise<void>): Promise<reporterTypes.FullResult['status'] | 'restarted'> {
-  if (restartWithExperimentalTsEsm(undefined, true))
-    return 'restarted';
+async function innerRunTestServer(configLocation: ConfigLocation, configCLIOverrides: ConfigCLIOverrides, options: { host?: string, port?: number }, openUI: (server: HttpServer, cancelPromise: ManualPromise<void>) => Promise<void>): Promise<reporterTypes.FullResult['status']> {
   const testServer = new TestServer(configLocation, configCLIOverrides);
   const cancelPromise = new ManualPromise<void>();
   const sigintWatcher = new SigIntWatcher();
@@ -465,7 +494,7 @@ async function innerRunTestServer(configLocation: ConfigLocation, configCLIOverr
   void sigintWatcher.promise().then(() => cancelPromise.resolve());
   try {
     const server = await testServer.start(options);
-    await openUI(server, cancelPromise, configLocation);
+    await openUI(server, cancelPromise);
     await cancelPromise;
   } finally {
     await testServer.stop();

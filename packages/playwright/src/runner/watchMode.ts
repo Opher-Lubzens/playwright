@@ -14,20 +14,24 @@
  * limitations under the License.
  */
 
-import readline from 'readline';
 import path from 'path';
-import { createGuid, eventsHelper, getPackageManagerExecCommand, ManualPromise } from 'playwright-core/lib/utils';
-import type { ConfigLocation } from '../common/config';
-import type { FullResult } from '../../types/testReporter';
-import { colors } from 'playwright-core/lib/utilsBundle';
-import { enquirer } from '../utilsBundle';
-import { separator, terminalScreen } from '../reporters/base';
-import { PlaywrightServer } from 'playwright-core/lib/remote/playwrightServer';
-import { TestServerDispatcher } from './testServer';
+import readline from 'readline';
 import { EventEmitter } from 'stream';
-import { type TestServerTransport, TestServerConnection } from '../isomorphic/testServerConnection';
+
+import { PlaywrightServer } from 'playwright-core/lib/remote/playwrightServer';
+import { ManualPromise, createGuid, eventsHelper, getPackageManagerExecCommand } from 'playwright-core/lib/utils';
+import { colors } from 'playwright-core/lib/utils';
+
+import { separator, terminalScreen } from '../reporters/base';
+import { enquirer } from '../utilsBundle';
+import { TestServerDispatcher } from './testServer';
 import { TeleSuiteUpdater } from '../isomorphic/teleSuiteUpdater';
-import { restartWithExperimentalTsEsm } from '../common/configLoader';
+import { TestServerConnection  } from '../isomorphic/testServerConnection';
+
+import type { FullResult } from '../../types/testReporter';
+import type { ConfigLocation } from '../common/config';
+import type { TestServerTransport } from '../isomorphic/testServerConnection';
+
 
 class InMemoryTransport extends EventEmitter implements TestServerTransport {
   public readonly _send: (data: string) => void;
@@ -68,10 +72,7 @@ interface WatchModeOptions {
   grep?: string;
 }
 
-export async function runWatchModeLoop(configLocation: ConfigLocation, initialOptions: WatchModeOptions): Promise<FullResult['status'] | 'restarted'> {
-  if (restartWithExperimentalTsEsm(undefined, true))
-    return 'restarted';
-
+export async function runWatchModeLoop(configLocation: ConfigLocation, initialOptions: WatchModeOptions): Promise<FullResult['status']> {
   const options: WatchModeOptions = { ...initialOptions };
   let bufferMode = false;
 
@@ -150,7 +151,7 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
       waitForCommand.result,
     ]);
     if (command === 'changed')
-      waitForCommand.cancel();
+      waitForCommand.dispose();
     if (bufferMode && command === 'changed')
       continue;
 
@@ -266,7 +267,7 @@ export async function runWatchModeLoop(configLocation: ConfigLocation, initialOp
   return result === 'passed' ? teardown.status : result;
 }
 
-function readKeyPress<T extends string>(handler: (text: string, key: any) => T | undefined): { cancel(): void; result: Promise<T> } {
+function readKeyPress<T extends string>(handler: (text: string, key: any) => T | undefined): { dispose(): void; result: Promise<T> } {
   const promise = new ManualPromise<T>();
 
   const rl = readline.createInterface({ input: process.stdin, escapeCodeTimeout: 50 });
@@ -280,16 +281,16 @@ function readKeyPress<T extends string>(handler: (text: string, key: any) => T |
       promise.resolve(result);
   });
 
-  const cancel = () => {
+  const dispose = () => {
     eventsHelper.removeEventListeners([listener]);
     rl.close();
     if (process.stdin.isTTY)
       process.stdin.setRawMode(false);
   };
 
-  void promise.finally(cancel);
+  void promise.finally(dispose);
 
-  return { result: promise, cancel };
+  return { result: promise, dispose };
 }
 
 const isInterrupt = (text: string, key: any) => text === '\x03' || text === '\x1B' || (key && key.name === 'escape') || (key && key.ctrl && key.name === 'c');
@@ -316,7 +317,7 @@ async function runTests(watchOptions: WatchModeOptions, testServerConnection: Te
     reuseContext: connectWsEndpoint ? true : undefined,
     workers: connectWsEndpoint ? 1 : undefined,
     headed: connectWsEndpoint ? true : undefined,
-  }).finally(() => waitForDone.cancel());
+  }).finally(() => waitForDone.dispose());
 }
 
 function readCommand() {

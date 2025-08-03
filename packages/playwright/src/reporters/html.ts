@@ -14,51 +14,44 @@
  * limitations under the License.
  */
 
-import { colors, open } from 'playwright-core/lib/utilsBundle';
-import { MultiMap, getPackageManagerExecCommand } from 'playwright-core/lib/utils';
 import fs from 'fs';
 import path from 'path';
-import type { TransformCallback } from 'stream';
 import { Transform } from 'stream';
-import { codeFrameColumns } from '../transform/babelBundle';
-import type * as api from '../../types/testReporter';
-import { HttpServer, assert, calculateSha1, copyFileAndMakeWritable, gracefullyProcessExitDoNotHang, removeFolders, sanitizeForFilePath, toPosixPath } from 'playwright-core/lib/utils';
-import { formatError, formatResultFailure, internalScreen, stripAnsiEscapes } from './base';
-import { resolveReporterOutputPath } from '../util';
-import type { Metadata } from '../../types/test';
-import type { ZipFile } from 'playwright-core/lib/zipBundle';
-import { yazl } from 'playwright-core/lib/zipBundle';
+
+import { HttpServer, MultiMap, assert, calculateSha1, getPackageManagerExecCommand, copyFileAndMakeWritable, gracefullyProcessExitDoNotHang, removeFolders, sanitizeForFilePath, toPosixPath } from 'playwright-core/lib/utils';
+import { colors } from 'playwright-core/lib/utils';
+import { open } from 'playwright-core/lib/utilsBundle';
 import { mime } from 'playwright-core/lib/utilsBundle';
-import type { HTMLReport, Stats, TestAttachment, TestCase, TestCaseSummary, TestFile, TestFileSummary, TestResult, TestStep } from '@html-reporter/types';
+import { yazl } from 'playwright-core/lib/zipBundle';
+
+import { CommonReporterOptions, formatError, formatResultFailure, internalScreen } from './base';
+import { codeFrameColumns } from '../transform/babelBundle';
+import { resolveReporterOutputPath, stripAnsiEscapes, stepTitle } from '../util';
+
 import type { ReporterV2 } from './reporterV2';
+import type { HtmlReporterOptions as HtmlReporterConfigOptions, Metadata, TestAnnotation } from '../../types/test';
+import type * as api from '../../types/testReporter';
+import type { HTMLReport, Location, Stats, TestAttachment, TestCase, TestCaseSummary, TestFile, TestFileSummary, TestResult, TestStep } from '@html-reporter/types';
+import type { ZipFile } from 'playwright-core/lib/zipBundle';
+import type { TransformCallback } from 'stream';
+import type { TestStepCategory } from '../util';
 
 type TestEntry = {
   testCase: TestCase;
   testCaseSummary: TestCaseSummary
 };
 
-const htmlReportOptions = ['always', 'never', 'on-failure'];
-type HtmlReportOpenOption = (typeof htmlReportOptions)[number];
+type HtmlReportOpenOption = NonNullable<HtmlReporterConfigOptions['open']>;
+const htmlReportOptions: HtmlReportOpenOption[] = ['always', 'never', 'on-failure'];
 
 const isHtmlReportOption = (type: string): type is HtmlReportOpenOption => {
-  return htmlReportOptions.includes(type);
-};
-
-type HtmlReporterOptions = {
-  configDir: string,
-  outputFolder?: string,
-  open?: HtmlReportOpenOption,
-  host?: string,
-  port?: number,
-  attachmentsBaseURL?: string,
-  _mode?: 'test' | 'list';
-  _isTestServer?: boolean;
+  return htmlReportOptions.includes(type as HtmlReportOpenOption);
 };
 
 class HtmlReporter implements ReporterV2 {
   private config!: api.FullConfig;
   private suite!: api.Suite;
-  private _options: HtmlReporterOptions;
+  private _options: HtmlReporterConfigOptions & CommonReporterOptions;
   private _outputFolder!: string;
   private _attachmentsBaseURL!: string;
   private _open: string | undefined;
@@ -67,7 +60,7 @@ class HtmlReporter implements ReporterV2 {
   private _buildResult: { ok: boolean, singleTestId: string | undefined } | undefined;
   private _topLevelErrors: api.TestError[] = [];
 
-  constructor(options: HtmlReporterOptions) {
+  constructor(options: HtmlReporterConfigOptions & CommonReporterOptions) {
     this._options = options;
   }
 
@@ -132,7 +125,14 @@ class HtmlReporter implements ReporterV2 {
   async onEnd(result: api.FullResult) {
     const projectSuites = this.suite.suites;
     await removeFolders([this._outputFolder]);
-    const builder = new HtmlBuilder(this.config, this._outputFolder, this._attachmentsBaseURL);
+    let noSnippets: boolean | undefined;
+    if (process.env.PLAYWRIGHT_HTML_NO_SNIPPETS === 'false' || process.env.PLAYWRIGHT_HTML_NO_SNIPPETS === '0')
+      noSnippets = false;
+    else if (process.env.PLAYWRIGHT_HTML_NO_SNIPPETS)
+      noSnippets = true;
+    noSnippets = noSnippets || this._options.noSnippets;
+
+    const builder = new HtmlBuilder(this.config, this._outputFolder, this._attachmentsBaseURL, process.env.PLAYWRIGHT_HTML_TITLE || this._options.title, noSnippets);
     this._buildResult = await builder.build(this.config.metadata, projectSuites, result, this._topLevelErrors);
   }
 
@@ -229,13 +229,17 @@ class HtmlBuilder {
   private _dataZipFile: ZipFile;
   private _hasTraces = false;
   private _attachmentsBaseURL: string;
+  private _title: string | undefined;
+  private _noSnippets: boolean;
 
-  constructor(config: api.FullConfig, outputDir: string, attachmentsBaseURL: string) {
+  constructor(config: api.FullConfig, outputDir: string, attachmentsBaseURL: string, title: string | undefined, noSnippets: boolean = false) {
     this._config = config;
     this._reportFolder = outputDir;
+    this._noSnippets = noSnippets;
     fs.mkdirSync(this._reportFolder, { recursive: true });
     this._dataZipFile = new yazl.ZipFile();
     this._attachmentsBaseURL = attachmentsBaseURL;
+    this._title = title;
   }
 
   async build(metadata: Metadata, projectSuites: api.Suite[], result: api.FullResult, topLevelErrors: api.TestError[]): Promise<{ ok: boolean, singleTestId: string | undefined }> {
@@ -261,7 +265,8 @@ class HtmlBuilder {
         }
       }
     }
-    createSnippets(this._stepsInFile);
+    if (!this._noSnippets)
+      createSnippets(this._stepsInFile);
 
     let ok = true;
     for (const [fileId, { testFile, testFileSummary }] of data) {
@@ -292,6 +297,7 @@ class HtmlBuilder {
     }
     const htmlReport: HTMLReport = {
       metadata,
+      title: this._title,
       startTime: result.startTime.getTime(),
       duration: result.duration,
       files: [...data.values()].map(e => e.testFileSummary),
@@ -321,12 +327,16 @@ class HtmlBuilder {
       async function redirect() {
         const hmrURL = new URL('http://localhost:44224'); // dev server, port is harcoded in build.js
         const popup = window.open(hmrURL);
-        window.addEventListener('message', evt => {
+        const listener = (evt: MessageEvent) => {
           if (evt.source === popup && evt.data === 'ready') {
-            popup!.postMessage((window as any).playwrightReportBase64, hmrURL.origin);
+            const element = document.getElementById('playwrightReportBase64');
+            popup!.postMessage(element?.textContent ?? '', hmrURL.origin);
+            window.removeEventListener('message', listener);
+            // This is generally not allowed
             window.close();
           }
-        }, { once: true });
+        };
+        window.addEventListener('message', listener);
       }
 
       fs.appendFileSync(redirectFile, `<script>(${redirect.toString()})()</script>`);
@@ -363,7 +373,7 @@ class HtmlBuilder {
   }
 
   private async _writeReportData(filePath: string) {
-    fs.appendFileSync(filePath, '<script>\nwindow.playwrightReportBase64 = "data:application/zip;base64,');
+    fs.appendFileSync(filePath, '<script id="playwrightReportBase64" type="application/zip">data:application/zip;base64,');
     await new Promise(f => {
       this._dataZipFile!.end(undefined, () => {
         this._dataZipFile!.outputStream
@@ -371,7 +381,7 @@ class HtmlBuilder {
             .pipe(fs.createWriteStream(filePath, { flags: 'a' })).on('close', f);
       });
     });
-    fs.appendFileSync(filePath, '";</script>');
+    fs.appendFileSync(filePath, '</script>');
   }
 
   private _addDataFile(fileName: string, data: any) {
@@ -401,8 +411,7 @@ class HtmlBuilder {
         projectName,
         location,
         duration,
-        // Annotations can be pushed directly, with a wrong type.
-        annotations: test.annotations.map(a => ({ type: a.type, description: a.description ? String(a.description) : a.description })),
+        annotations: this._serializeAnnotations(test.annotations),
         tags: test.tags,
         outcome: test.outcome(),
         path,
@@ -415,8 +424,7 @@ class HtmlBuilder {
         projectName,
         location,
         duration,
-        // Annotations can be pushed directly, with a wrong type.
-        annotations: test.annotations.map(a => ({ type: a.type, description: a.description ? String(a.description) : a.description })),
+        annotations: this._serializeAnnotations(test.annotations),
         tags: test.tags,
         outcome: test.outcome(),
         path,
@@ -500,14 +508,33 @@ class HtmlBuilder {
     }).filter(Boolean) as TestAttachment[];
   }
 
+  private _serializeAnnotations(annotations: api.TestCase['annotations']): TestAnnotation[] {
+    // Annotations can be pushed directly, with a wrong type.
+    return annotations.map(a => ({
+      type: a.type,
+      description: a.description === undefined ? undefined : String(a.description),
+      location: a.location ? {
+        file: a.location.file,
+        line: a.location.line,
+        column: a.location.column,
+      } : undefined,
+    }));
+  }
+
   private _createTestResult(test: api.TestCase, result: api.TestResult): TestResult {
     return {
       duration: result.duration,
       startTime: result.startTime.toISOString(),
       retry: result.retry,
       steps: dedupeSteps(result.steps).map(s => this._createTestStep(s, result)),
-      errors: formatResultFailure(internalScreen, test, result, '').map(error => error.message),
+      errors: formatResultFailure(internalScreen, test, result, '').map(error => {
+        return {
+          message: error.message,
+          codeframe: error.location ? createErrorCodeframe(error.message, error.location) : undefined
+        };
+      }),
       status: result.status,
+      annotations: this._serializeAnnotations(result.annotations),
       attachments: this._serializeAttachments([
         ...result.attachments,
         ...result.stdout.map(m => stdioAttachment(m, 'stdout')),
@@ -517,8 +544,12 @@ class HtmlBuilder {
 
   private _createTestStep(dedupedStep: DedupedStep, result: api.TestResult): TestStep {
     const { step, duration, count } = dedupedStep;
+    const skipped = dedupedStep.step.annotations?.find(a => a.type === 'skip');
+    let title = stepTitle(step.category as TestStepCategory, step.title);
+    if (skipped)
+      title = `${title} (skipped${skipped.description ? ': ' + skipped.description : ''})`;
     const testStep: TestStep = {
-      title: step.title,
+      title,
       startTime: step.startTime.toISOString(),
       duration,
       steps: dedupeSteps(step.steps).map(s => this._createTestStep(s, result)),
@@ -530,7 +561,8 @@ class HtmlBuilder {
       }),
       location: this._relativeLocation(step.location),
       error: step.error?.message,
-      count
+      count,
+      skipped: !!skipped,
     };
     if (step.location)
       this._stepsInFile.set(step.location.file, testStep);
@@ -662,6 +694,31 @@ function createSnippets(stepsInFile: MultiMap<string, TestStep>) {
       step.snippet = snippetLines.join('\n');
     }
   }
+}
+
+function createErrorCodeframe(message: string, location: Location) {
+  let source: string;
+  try {
+    source = fs.readFileSync(location.file, 'utf-8') + '\n//';
+  } catch (e) {
+    return;
+  }
+
+  return codeFrameColumns(
+      source,
+      {
+        start: {
+          line: location.line,
+          column: location.column,
+        },
+      },
+      {
+        highlightCode: false,
+        linesAbove: 100,
+        linesBelow: 100,
+        message: stripAnsiEscapes(message).split('\n')[0] || undefined,
+      }
+  );
 }
 
 export default HtmlReporter;

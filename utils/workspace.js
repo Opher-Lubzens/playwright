@@ -125,9 +125,16 @@ class Workspace {
       }
       await maybeWriteJSON(pkg.packageJSONPath, pkg.packageJSON);
     }
-  
+
     // Re-run npm i to make package-lock dirty.
-    child_process.execSync('npm i');
+    child_process.execSync('npm i', {
+      env: {
+        ...process.env,
+        // Playwright would download the browsers because it has e.g. @playwright/browser-chromium or playwright-chromium
+        // in the workspace. We don't want to download browsers here.
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+      }
+    });
     return hasChanges;
   }
 }
@@ -165,6 +172,11 @@ const workspace = new Workspace(ROOT_PATH, [
   new PWPackage({
     name: 'playwright-chromium',
     path: path.join(ROOT_PATH, 'packages', 'playwright-chromium'),
+    files: LICENCE_FILES,
+  }),
+  new PWPackage({
+    name: '@playwright/client',
+    path: path.join(ROOT_PATH, 'packages', 'playwright-client'),
     files: LICENCE_FILES,
   }),
   new PWPackage({

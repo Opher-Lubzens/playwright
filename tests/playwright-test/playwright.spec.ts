@@ -510,18 +510,19 @@ test('should work with video: on-first-retry', async ({ runInlineTest }) => {
   expect(fs.existsSync(dirPass)).toBeFalsy();
 
   const dirFail = test.info().outputPath('test-results', 'a-fail-chromium');
-  expect(fs.existsSync(dirFail)).toBeFalsy();
+  expect(fs.readdirSync(dirFail)).toEqual(['error-context.md']);
 
   const dirRetry = test.info().outputPath('test-results', 'a-fail-chromium-retry1');
   const videoFailRetry = fs.readdirSync(dirRetry).find(file => file.endsWith('webm'));
   expect(videoFailRetry).toBeTruthy();
 
-  expect(result.report.suites[0].specs[1].tests[0].results[0].attachments).toEqual([]);
+  const errorPrompt = expect.objectContaining({ name: 'error-context' });
+  expect(result.report.suites[0].specs[1].tests[0].results[0].attachments).toEqual([errorPrompt]);
   expect(result.report.suites[0].specs[1].tests[0].results[1].attachments).toEqual([{
     name: 'video',
     contentType: 'video/webm',
     path: path.join(dirRetry, videoFailRetry!),
-  }]);
+  }, errorPrompt]);
 });
 
 test('should work with video size', async ({ runInlineTest }) => {
@@ -759,15 +760,15 @@ test('should use actionTimeout for APIRequestContext', async ({ runInlineTest, s
     'a.test.ts': `
       import { test, expect } from '@playwright/test';
       test('default APIRequestContext fixture', async ({ request }) => {
-        await expect(request.get('/stall')).rejects.toThrow('apiRequestContext.get: Request timed out after 1111ms');
+        await expect(request.get('/stall')).rejects.toThrow('apiRequestContext.get: Timeout 1111ms exceeded');
       });
       test('newly created APIRequestContext without options', async ({ playwright }) => {
         const apiRequestContext = await playwright.request.newContext();
-        await expect(apiRequestContext.get('/stall')).rejects.toThrow('apiRequestContext.get: Request timed out after 1111ms');
+        await expect(apiRequestContext.get('/stall')).rejects.toThrow('apiRequestContext.get: Timeout 1111ms exceeded');
       });
       test('newly created APIRequestContext with options', async ({ playwright }) => {
         const apiRequestContextWithOptions = await playwright.request.newContext({ httpCredentials: { username: 'user', password: 'pass' } });
-        await expect(apiRequestContextWithOptions.get('/stall')).rejects.toThrow('apiRequestContext.get: Request timed out after 1111ms');
+        await expect(apiRequestContextWithOptions.get('/stall')).rejects.toThrow('apiRequestContext.get: Timeout 1111ms exceeded');
       });
     `,
   }, { workers: 1 });
@@ -893,4 +894,20 @@ test('page.pause() should disable test timeout', async ({ runInlineTest }) => {
   expect(result.exitCode).toBe(0);
   expect(result.passed).toBe(1);
   expect(result.output).toContain('success!');
+});
+
+test('PWDEBUG=console should expose window.playwright', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+
+      test('test', async ({ page }) => {
+        await page.setContent('<body></body>');
+        const bodyTag = await page.evaluate(() => window.playwright.$('body').tagName);
+        expect(bodyTag).toBe('BODY');
+      });
+    `,
+  }, {}, { PWDEBUG: 'console' });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
 });

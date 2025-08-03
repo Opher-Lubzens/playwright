@@ -231,12 +231,12 @@ export function toHaveAttribute(
   this: ExpectMatcherState,
   locator: LocatorEx,
   name: string,
-  expected: string | RegExp | undefined | { timeout?: number },
+  expected: string | RegExp | (string | RegExp)[] | undefined | { timeout?: number },
   options?: { timeout?: number, ignoreCase?: boolean },
 ) {
   if (!options) {
     // Update params for the case toHaveAttribute(name, options);
-    if (typeof expected === 'object' && !isRegExp(expected)) {
+    if (typeof expected === 'object' && !isRegExp(expected)&& !Array.isArray(expected)) {
       options = expected;
       expected = undefined;
     }
@@ -245,6 +245,12 @@ export function toHaveAttribute(
     return toBeTruthy.call(this, 'toHaveAttribute', locator, 'Locator', 'have attribute', '', async (isNot, timeout) => {
       return await locator._expect('to.have.attribute', { expressionArg: name, isNot, timeout });
     }, options);
+  }
+  if (Array.isArray(expected)) {
+    return toEqual.call(this, 'toHaveAttribute', locator, 'Locator', async (isNot, timeout) => {
+      const expectedText = serializeExpectedTextValues(expected, { ignoreCase: options?.ignoreCase });
+      return await locator._expect('to.have.attribute.value.array', { expressionArg: name, expectedText, isNot, timeout });
+    }, expected, options);
   }
   return toMatchText.call(this, 'toHaveAttribute', locator, 'Locator', async (isNot, timeout) => {
     const expectedText = serializeExpectedTextValues([expected as (string | RegExp)], { ignoreCase: options?.ignoreCase });

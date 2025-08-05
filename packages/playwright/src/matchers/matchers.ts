@@ -236,7 +236,7 @@ export function toHaveAttribute(
 ) {
   if (!options) {
     // Update params for the case toHaveAttribute(name, options);
-    if (typeof expected === 'object' && !isRegExp(expected)&& !Array.isArray(expected)) {
+    if (typeof expected === 'object' && !isRegExp(expected) && !Array.isArray(expected)) {
       options = expected;
       expected = undefined;
     }
